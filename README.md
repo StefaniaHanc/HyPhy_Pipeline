@@ -1,2 +1,116 @@
-# HyPhy_Pipeline
-Pipeline for pretreatments, analysis and processing of results for evolutionary models implemented in HyPhy.
+#  HyPhy evolutionary selection pipeline
+
+Parallelized bash pipeline with workflows necessary for evolutionary selection analysis using HyPhy (http://hyphy.org/). Pipeline handles data formatting and filtering, terminal and premature stop codon processing, parallelised HyPhy execution (BUSTED, aBSREL); and for BUSTED : multiple testing correction, Manhattan plotting, and GO term enrichment.
+
+This pipeline has been adapted to run on coral genomes.
+
+## Pipeline’s steps
+
+### **1 : inputs pretreatments and filtering :**
+* indexes reference fasta (prerequisite for VCF2FASTA)
+* compresses and indexes VCF (for faster treatment)
+* filters VCF (FMISS/MAF/QUAL/DP)and indexes the final filtered VCF
+* sorts GFF
+
+  
+### **2 : VCF to FASTA conversion :**
+* calls vcf2fasta.py (located in scripts/vcf2fasta/)
+* runs VCF2FASTA for the extraction of CDS regions and generates gene-specific fasta files (including ambiguous sites) while counting polymorphic sites for each gene
+    * adapted from git yeeus/vcf2fasta/
+* outputs FASTA_BY_GENE_CDS/variant_counts_summary.tsv with nb. of SNPs per gene
+* moves monomorph genes to separate folder (OUTPUTS/MONOMORPH_GENES)
+
+  
+### **3 : Stop codon pretreatments :**
+* trims terminal stop codons (including IUPAC stops: TAR, TRA); makes sure all sequences have equal lengths
+    * HyPhy requires absence of STOP codons, otherwise the analysis gets interrupted
+* handles premature internal stop codons (pruning affected individuals using Phylo Biophyton package and deleting them from gene fastas or trimming sequences if too many stops (based on threshold))
+* outputs 3 folders based on number of detected stop (clean, containing no stops; pruned, containing <30 individuals; trimmed, containing more stop positions or >30 individuals with stop codons)
+* puts each fasta into a separate folder
+    * otherwise the HyPhy analysis gets corrupted due to temporary files overwrites
+* outputs statistics (/internal_stops_report.tsv) containing : gene name, action taken (pruning-trimming) number of pruned individuals, % of gene kept, total number of stops detected, position of the first stop, list of pruned individuals
+
+
+
+### **4 : Parallelized execution of HyPhy :**
+* uses GNU Parallel to run `BUSTED` or `aBSREL` across all genes by optimising resources (running on all/wished nb of threads (--threads), attributes 1CPU per gene)
+* detects genes whose run failed
+
+
+### **5 : Assembly of HyPhy outputs :**
+* reads the saved log files and outputs a table with rows for each gene
+    * informations extracted for BUSTED : 
+          gene name, selection mode, significance, p-value, omega value for the test detecting selection, proportion of gene concerned, global omega value (for the whole gene), model statistics (LOG, AIC), errors and warnings
+    *  informations extracted for aBSREL : 
+          gene name, selection mode, number of branches under selection, average p-value across branches, number of tested branches, errors, list of species under selection (including the average p-value for each species), list of branches under positive selection. If selection does not happen on the terminal nodes, node number is given.
+
+
+
+
+### Next steps are only adapted for BUSTED gene analysis :
+* **6, 7 : Visualization of genes under selection across contigs & enrichment:** generates Manhattan plots of significant genes and performs GO term enrichment.
+
+
+## Dependencies needed for this pipeline to work :
+Make sure they are installed and available in `$PATH`:
+
+**Bash tools :**
+* `bgzip`, `samtools`, `bcftools`
+* `awk`, `sort`, `parallel`
+* `hyphy`
+
+**Python modules :**
+* `Bio`, `pandas`, `numpy`, `matplotlib`, `pysam`, `art`
+
+**R Packages (please make sure they are installed in the environment):**
+(these are only required for the GO term enrichment analysis)
+* `clusterProfiler`, `enrichplot`, `GO.db`, `tidyverse`
+
+
+## Required arguments (see --help): 
+Reference genome : .fa or .fasta
+Annotation : .gff
+Variants : .vcf or .vcf.gz
+Phylogeny : .nwk (phylogenetic tree file)
+Model : busted or absrel
+
+## Optional arguments : 
+Start & End step : only specific steps may be run at a time
+Fraction of missingess accepted for each site :  0.0 to 1.0 (optimal is around ~ 0.2 )
+Threads : number of CPUs available for the analysis
+Ontology (optional) : .gmt (if running GO Enrichment)
+GEA file : list of genes from the genotype-environment association study (gene/line) for the manhattan plot.
+Species attribution : tab separated file containing individuals and the corresponding species name
+
+## Outputs and files located in the "OUTPUTS" directory (or -o) : 
+1. zipped, filtered & indexed VCF file, sorted GFF
+2. Dir created:
+     $OUTPUTS/FASTA_BY_GENE_CDS, containing the fastas by gene containing sequences of all individuals generated by VCF2FASTA tool, and the variant_counts_summary.tsv file
+     $OUTPUTS/MONOMORPH_GENES (isolated monomorph fastas)
+3. Dir created:
+     3.1 : $OUTPUTS/SEQS_FOR_HYPHY (terminal stops trimmed in separated folders)
+     3.2 : $OUTPUTS/PROCESSED/CLEAN , $OUTPUTS/PROCESSED/PRUNED, $OUTPUTS/PROCESSED/TRIMMED ; and file PROCESSED/internal_stops_report.tsv"
+4. Dir created :
+     $OUTPUTS/HYPHY_OUTPUTS (containing HyPhy JSON outputs and a "log" folder containing the information HyPhy outputs to the terminal. File containing failed analysis is equally inside the "log" folder)
+5. For BUSTED model :
+     Output files in the OUTPUTS folder : /HYPHY_selection_results.tsv, fdr- & bonferroni-corrected genes (ex. /HYPHY_selection_corrected_FDR.tsv), summary file of the results /Hyphy_summary_log.txt
+
+   For aBSREL model : $OUTPUTS/HYPHY_aBSREL_selection_results.tsv
+
+6. Output file : $OUTPUTS/manhattan_plot_positive_selection_genes_log_pval_0.05.png
+7. Plots with .png extension in $OUTPUTS
+
+For errors and exec check : /pipeline_run.log      
+
+   
+
+
+## Usage
+The pipeline is executed via the script `HYPHY_PIPELINE.sh`. 
+The scripts that are executed via the main pipeline have to be in the "scripts" directory located in the same dir. 
+
+```bash
+bash  path/HYPHY_PIPELINE.sh --ref <REF_FASTA> --vcf <VCF> --gff <GFF> --tree <TREE> -m <HYPHY_MODEL> [options]
+
+# example run
+bash path/HYPHY_PIPELINE.sh --ref file.fa --vcf file.vcf --gff file.gff -m busted -t 95 -f 0.17 --start-at 2 --end-at 5 -o path/outputs_dir_name
